@@ -1,7 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 import time
-import random
 import heapq
 from queue import Queue
 
@@ -10,7 +9,6 @@ ROWS = 10
 COLS = 10
 CELL_SIZE = 50
 DELAY = 0.05
-DYNAMIC_OBS_PROB = 0.05
 IDDFS_MAX_DEPTH = 25
 
 # Colors
@@ -64,7 +62,6 @@ class GridApp:
         self.grid = []
         self.algorithm = tk.StringVar(value="BFS")
         self.dls_limit_var = tk.IntVar(value=10)
-        self.dynamic_obstacles = tk.BooleanVar(value=False)
         self.stop_flag = False
         self.visit_count = 0
         self.node_visit_map = {}
@@ -115,7 +112,6 @@ class GridApp:
             command=lambda: self.set_mode("wall")
         ).pack(fill="x", pady=2)
 
-
         tk.Frame(sidebar, height=10, bg=SIDEBAR_BG).pack()
 
         tk.Button(
@@ -149,13 +145,6 @@ class GridApp:
             textvariable=self.dls_limit_var, 
             width=5
         ).pack(pady=2)
-
-        tk.Checkbutton(
-            sidebar, 
-            text="Dynamic Obstacles", 
-            variable=self.dynamic_obstacles, 
-            bg=SIDEBAR_BG
-        ).pack(pady=5)
 
         tk.Button(
             sidebar, 
@@ -287,18 +276,6 @@ class GridApp:
                     neighbors.append((nr, nc))
         return neighbors
 
-    def spawn_dynamic_obstacle(self):
-        if self.dynamic_obstacles.get() and random.random() < DYNAMIC_OBS_PROB:
-            empty_cells = []
-            for r in range(ROWS):
-                for c in range(COLS):
-                    if self.grid[r][c].type == "empty":
-                        empty_cells.append(self.grid[r][c])
-            if empty_cells:
-                cell = random.choice(empty_cells)
-                cell.type = "obstacle"
-                self.update_cell_color(cell.row, cell.col)
-
     def animate_node(self, row, col):
         if self.stop_flag:
             raise StopIteration
@@ -308,10 +285,8 @@ class GridApp:
             self.visit_count += 1
             self.node_visit_map[(row, col)] = self.visit_count 
             self.update_cell_color(row, col, number=self.visit_count)
-        
         self.root.update()
         time.sleep(DELAY)
-        self.spawn_dynamic_obstacle()
 
     def clear_grid(self):
         self.start_pos = None
@@ -382,6 +357,7 @@ class GridApp:
         except StopIteration:
             pass
 
+    # --- Algorithm Implementations ---
     def run_bfs(self):
         q = [Node(*self.start_pos)]
         visited = {self.start_pos}
