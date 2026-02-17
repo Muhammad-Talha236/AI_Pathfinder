@@ -1,18 +1,18 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 import time
 import random
-from queue import Queue, PriorityQueue
+import heapq
+from queue import Queue
 
 # --- Constants ---
 ROWS, COLS = 10, 10
 CELL_SIZE = 50
-DELAY = 0.1  # seconds between steps
-DYNAMIC_OBS_PROB = 0.05  # Probability of dynamic obstacle spawn
+DELAY = 0.05  
+DYNAMIC_OBS_PROB = 0.05  
 
-# Short limits for DLS/IDDFS
 DLS_LIMIT = 5
-IDDFS_MAX_DEPTH = 10
+IDDFS_MAX_DEPTH = 15
 
 # Colors
 EMPTY_COLOR = "white"
@@ -28,58 +28,81 @@ SIDEBAR_BG = "#f0f0f0"
 BUTTON_COLOR = "#4CAF50"
 BUTTON_TEXT_COLOR = "white"
 LABEL_COLOR = "#2196F3"
-INITIAL_TEXT_COLOR = "#d3d3d3"
 
-# --- Grid Setup ---
+# Movement Logic
+MOVES = [(-1, 0), (0, 1), (1, 0), (0, -1), (1, 1), (-1, -1)]
+
+# --- Logic Classes ---
+class Node:
+    def __init__(self, r, c, parent=None, cost=0):
+        self.r = r
+        self.c = c
+        self.parent = parent
+        self.cost = cost
+
+    def get_pos(self):
+        return (self.r, self.c)
+
 class Cell:
     def __init__(self, row, col, canvas_id):
         self.row = row
         self.col = col
         self.canvas_id = canvas_id
-        self.type = "empty"  # empty, wall, start, target
+        self.type = "empty" 
 
+# --- Main App ---
 class GridApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("AI Pathfinder - Tkinter")
-        self.mode = None
-        self.start = None
-        self.target = None
+        self.root.title("AI Pathfinder - Merged Logic")
+        self.mode = "wall"
+        self.start_pos = None
+        self.target_pos = None
         self.grid = []
         self.algorithm = tk.StringVar(value="BFS")
         self.dynamic_obstacles = tk.BooleanVar(value=False)
-        self.stop_flag = False  # For stopping search
+        self.stop_flag = False
+        self.visit_count = 0
 
         # Canvas
-        self.canvas = tk.Canvas(root, width=COLS*CELL_SIZE, height=ROWS*CELL_SIZE)
-        self.canvas.grid(row=0, column=0, rowspan=10)
+        self.canvas = tk.Canvas(root, width=COLS*CELL_SIZE, height=ROWS*CELL_SIZE, bg="white")
+        self.canvas.grid(row=0, column=0, rowspan=10, padx=10, pady=10)
         self.canvas.bind("<Button-1>", self.cell_clicked)
+        self.canvas.bind("<B1-Motion>", self.cell_clicked)
 
         # Sidebar
         sidebar = tk.Frame(root, bg=SIDEBAR_BG)
         sidebar.grid(row=0, column=1, sticky="ns", padx=5, pady=5)
+        
+        tk.Label(sidebar, text="Node Controls", bg=SIDEBAR_BG, font=("Arial", 10, "bold")).pack(pady=5)
         tk.Button(sidebar, text="Set Start Node", bg=BUTTON_COLOR, fg=BUTTON_TEXT_COLOR,
-                  command=lambda: self.set_mode("start")).pack(fill="x", pady=3)
+                  command=lambda: self.set_mode("start")).pack(fill="x", pady=2)
         tk.Button(sidebar, text="Set Target Node", bg=BUTTON_COLOR, fg=BUTTON_TEXT_COLOR,
-                  command=lambda: self.set_mode("target")).pack(fill="x", pady=3)
+                  command=lambda: self.set_mode("target")).pack(fill="x", pady=2)
         tk.Button(sidebar, text="Place/Remove Wall", bg=BUTTON_COLOR, fg=BUTTON_TEXT_COLOR,
-                  command=lambda: self.set_mode("wall")).pack(fill="x", pady=3)
+                  command=lambda: self.set_mode("wall")).pack(fill="x", pady=2)
         tk.Button(sidebar, text="Clear Cell", bg=BUTTON_COLOR, fg=BUTTON_TEXT_COLOR,
-                  command=lambda: self.set_mode("clear")).pack(fill="x", pady=3)
-        tk.Button(sidebar, text="Clear Grid", bg=BUTTON_COLOR, fg=BUTTON_TEXT_COLOR,
-                  command=self.clear_grid).pack(fill="x", pady=3)
+                  command=lambda: self.set_mode("clear")).pack(fill="x", pady=2)
+        
+        tk.Frame(sidebar, height=10, bg=SIDEBAR_BG).pack()
+        
+        tk.Button(sidebar, text="Clear Grid", bg="#9E9E9E", fg="white",
+                  command=self.clear_grid).pack(fill="x", pady=2)
         tk.Button(sidebar, text="Start Search", bg="#f44336", fg=BUTTON_TEXT_COLOR,
-                  command=self.start_search).pack(fill="x", pady=3)
+                  command=self.start_search).pack(fill="x", pady=5)
         tk.Button(sidebar, text="Stop Search", bg="#FF9800", fg=BUTTON_TEXT_COLOR,
-                  command=self.stop_search).pack(fill="x", pady=3)
+                  command=self.stop_search).pack(fill="x", pady=2)
+        
         tk.Checkbutton(sidebar, text="Dynamic Obstacles", variable=self.dynamic_obstacles,
                        bg=SIDEBAR_BG).pack(pady=5)
+        
         tk.Label(sidebar, text="Select Algorithm:", bg=SIDEBAR_BG, fg=LABEL_COLOR).pack(pady=5)
-        tk.OptionMenu(sidebar, self.algorithm, "BFS", "DFS", "UCS", "DLS", "IDDFS", "Bidirectional").pack(fill="x")
+        self.algo_menu = ttk.Combobox(sidebar, textvariable=self.algorithm, state="readonly")
+        self.algo_menu['values'] = ("BFS", "DFS", "UCS", "DLS", "IDDFS", "Bidirectional")
+        self.algo_menu.pack(fill="x", padx=5)
 
         self.create_grid()
 
-    # --- Grid Creation ---
     def create_grid(self):
         for row in range(ROWS):
             row_cells = []
@@ -91,289 +114,242 @@ class GridApp:
                 row_cells.append(Cell(row, col, rect))
             self.grid.append(row_cells)
 
-    # --- Mode ---
     def set_mode(self, mode):
         self.mode = mode
 
-    # --- Click Handling ---
     def cell_clicked(self, event):
         col, row = event.x // CELL_SIZE, event.y // CELL_SIZE
-        if row >= ROWS or col >= COLS:
-            return
+        if not (0 <= row < ROWS and 0 <= col < COLS): return
+        
         cell = self.grid[row][col]
         if self.mode == "start":
-            if self.start:
-                self.grid[self.start[0]][self.start[1]].type = "empty"
-                self.update_cell_color(self.start[0], self.start[1])
-            self.start = (row, col)
-            cell.type = "start"
-            self.update_cell_color(row, col)
+            if self.start_pos: self.update_cell_type(self.start_pos[0], self.start_pos[1], "empty")
+            self.start_pos = (row, col)
+            self.update_cell_type(row, col, "start")
         elif self.mode == "target":
-            if self.target:
-                self.grid[self.target[0]][self.target[1]].type = "empty"
-                self.update_cell_color(self.target[0], self.target[1])
-            self.target = (row, col)
-            cell.type = "target"
-            self.update_cell_color(row, col)
+            if self.target_pos: self.update_cell_type(self.target_pos[0], self.target_pos[1], "empty")
+            self.target_pos = (row, col)
+            self.update_cell_type(row, col, "target")
         elif self.mode == "wall":
-            cell.type = "empty" if cell.type=="wall" else "wall"
-            self.update_cell_color(row, col)
+            if (row, col) not in (self.start_pos, self.target_pos):
+                self.update_cell_type(row, col, "wall")
         elif self.mode == "clear":
-            if (row, col) == self.start:
-                self.start = None
-            if (row, col) == self.target:
-                self.target = None
-            cell.type = "empty"
-            self.update_cell_color(row, col)
+            if (row, col) == self.start_pos: self.start_pos = None
+            if (row, col) == self.target_pos: self.target_pos = None
+            self.update_cell_type(row, col, "empty")
 
-    # --- Coloring ---
+    def update_cell_type(self, r, c, type_name):
+        self.grid[r][c].type = type_name
+        self.update_cell_color(r, c)
+
     def update_cell_color(self, row, col, number=None):
         cell = self.grid[row][col]
-        color = EMPTY_COLOR
-        if cell.type=="start": color=START_COLOR
-        elif cell.type=="target": color=TARGET_COLOR
-        elif cell.type=="wall": color=WALL_COLOR
-        elif cell.type=="explored": color=EXPLORED_COLOR
-        elif cell.type=="frontier": color=FRONTIER_COLOR
-        elif cell.type=="path": color=PATH_COLOR
-        elif cell.type=="obstacle": color=OBSTACLE_COLOR
-
+        colors = {
+            "empty": EMPTY_COLOR, "wall": WALL_COLOR, "start": START_COLOR,
+            "target": TARGET_COLOR, "explored": EXPLORED_COLOR, 
+            "frontier": FRONTIER_COLOR, "path": PATH_COLOR, "obstacle": OBSTACLE_COLOR
+        }
+        color = colors.get(cell.type, EMPTY_COLOR)
         self.canvas.itemconfig(cell.canvas_id, fill=color)
+        
         self.canvas.delete(f"text_{row}_{col}")
         if number is not None:
-            self.canvas.create_text(col*CELL_SIZE+CELL_SIZE//2, row*CELL_SIZE+CELL_SIZE//2,
+            self.canvas.create_text(row*0+col*CELL_SIZE+CELL_SIZE//2, row*CELL_SIZE+CELL_SIZE//2,
                                     text=str(number), fill="black", tags=f"text_{row}_{col}")
 
-    # --- Grid Utilities ---
+    def get_neighbors(self, r, c):
+        neighbors = []
+        for dr, dc in MOVES:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < ROWS and 0 <= nc < COLS:
+                if self.grid[nr][nc].type not in ("wall", "obstacle"):
+                    neighbors.append((nr, nc))
+        return neighbors
+
+    def spawn_dynamic_obstacle(self):
+        if self.dynamic_obstacles.get() and random.random() < DYNAMIC_OBS_PROB:
+            empty_cells = [c for r in self.grid for c in r if c.type == "empty"]
+            if empty_cells:
+                cell = random.choice(empty_cells)
+                cell.type = "obstacle"
+                self.update_cell_color(cell.row, cell.col)
+
+    def animate_node(self, row, col, explored=True):
+        if self.stop_flag: raise StopIteration
+        cell = self.grid[row][col]
+        if (row, col) != self.start_pos and (row, col) != self.target_pos:
+            if explored: cell.type = "explored"
+            self.visit_count += 1
+            self.update_cell_color(row, col, number=self.visit_count)
+        
+        self.root.update()
+        time.sleep(DELAY)
+        self.spawn_dynamic_obstacle()
+
     def clear_grid(self):
-        self.start = None
-        self.target = None
+        self.start_pos = self.target_pos = None
         self.stop_flag = True
         for row in self.grid:
             for cell in row:
                 cell.type = "empty"
                 self.update_cell_color(cell.row, cell.col)
 
-    def clear_explored_path(self):
+    def clear_path_only(self):
+        self.visit_count = 0
         for row in self.grid:
             for cell in row:
-                if cell.type in ("explored","frontier","path"):
+                if cell.type in ("explored", "frontier", "path"):
                     cell.type = "empty"
                     self.update_cell_color(cell.row, cell.col)
 
-    def neighbors(self, row, col):
-        # Strict clockwise order with only main diagonals
-        directions = [(-1, 0),  # Up
-                      (0, 1),   # Right
-                      (1, 0),   # Bottom
-                      (1, 1),   # Bottom-Right (main diagonal)
-                      (0, -1),  # Left
-                      (-1, -1)] # Top-Left (main diagonal)
-        
-        result = []
-        for dr, dc in directions:
-            r, c = row + dr, col + dc
-            if 0 <= r < ROWS and 0 <= c < COLS:
-                if self.grid[r][c].type not in ("wall", "obstacle"):
-                    result.append((r, c))
-        return result
-
-
-    def spawn_dynamic_obstacle(self):
-        if self.dynamic_obstacles.get() and random.random()<DYNAMIC_OBS_PROB:
-            empty_cells = [cell for row in self.grid for cell in row if cell.type=="empty"]
-            if empty_cells:
-                cell = random.choice(empty_cells)
-                cell.type="obstacle"
-                self.update_cell_color(cell.row, cell.col)
-
-    # --- Search Controls ---
     def stop_search(self):
         self.stop_flag = True
 
-    def animate_node(self,row,col,number=None,frontier=False,explored=False):
-        if self.stop_flag:
-            raise StopIteration
-        cell=self.grid[row][col]
-        if frontier: cell.type="frontier"
-        if explored: cell.type="explored"
-        self.update_cell_color(row,col,number)
-        self.root.update()
-        time.sleep(DELAY)
-        self.spawn_dynamic_obstacle()
-
-    def reconstruct_path(self,came_from,end):
-        path=[]
-        current=end
-        while current in came_from:
-            path.append(current)
-            current=came_from[current]
-        path.reverse()
-        for r,c in path:
-            cell=self.grid[r][c]
-            if cell.type not in ("start","target"):
-                cell.type="path"
-                self.update_cell_color(r,c)
+    def reconstruct_path(self, node):
+        curr = node
+        while curr:
+            r, c = curr.r, curr.c
+            if (r, c) != self.start_pos and (r, c) != self.target_pos:
+                self.grid[r][c].type = "path"
+                self.update_cell_color(r, c)
                 self.root.update()
                 time.sleep(DELAY)
+            curr = curr.parent
 
-    # --- Search Algorithms ---
+    # --- Search Implementations ---
     def start_search(self):
-        if not self.start or not self.target:
-            messagebox.showwarning("Warning","Set both Start and Target!")
+        if not self.start_pos or not self.target_pos:
+            messagebox.showwarning("Warning", "Place Start and Target nodes!")
             return
-        self.stop_flag=False
-        algo=self.algorithm.get()
+        
+        self.clear_path_only()
+        self.stop_flag = False
+        algo = self.algorithm.get()
+        
         try:
-            if algo=="BFS": self.run_bfs()
-            elif algo=="DFS": self.run_dfs()
-            elif algo=="UCS": self.run_ucs()
-            elif algo=="DLS": self.run_dls(DLS_LIMIT)
-            elif algo=="IDDFS": self.run_iddfs(IDDFS_MAX_DEPTH)
-            elif algo=="Bidirectional": self.run_bidirectional()
+            if algo == "BFS": self.run_bfs()
+            elif algo == "DFS": self.run_dfs()
+            elif algo == "UCS": self.run_ucs()
+            elif algo == "DLS": self.run_dls(DLS_LIMIT)
+            elif algo == "IDDFS": self.run_iddfs()
+            elif algo == "Bidirectional": self.run_bidirectional()
         except StopIteration:
-            messagebox.showinfo("Info","Search Stopped!")
+            messagebox.showinfo("Stopped", "Search was cancelled.")
 
-    # --- BFS ---
     def run_bfs(self):
-        start,target=self.start,self.target
-        queue=Queue();queue.put(start)
-        came_from={};visited=set();node_number=1
-        while not queue.empty():
-            current=queue.get()
-            if current in visited: continue
-            visited.add(current)
-            r,c=current
-            self.animate_node(r,c,number=node_number,explored=True)
-            node_number+=1
-            if current==target: self.reconstruct_path(came_from,target);return
-            for nr,nc in self.neighbors(r,c):
-                if (nr,nc) not in visited: queue.put((nr,nc));came_from.setdefault((nr,nc),current)
+        start_node = Node(*self.start_pos)
+        q = [start_node]
+        visited = {self.start_pos}
+        
+        while q:
+            curr = q.pop(0)
+            if (curr.r, curr.c) == self.target_pos:
+                self.reconstruct_path(curr.parent)
+                return
+            
+            self.animate_node(curr.r, curr.c)
+            for nr, nc in self.get_neighbors(curr.r, curr.c):
+                if (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    q.append(Node(nr, nc, curr))
 
-    # --- DFS ---
     def run_dfs(self):
-        start,target=self.start,self.target
-        stack=[start];came_from={};visited=set();node_number=1
+        stack = [Node(*self.start_pos)]
+        visited = set()
+        
         while stack:
-            current=stack.pop()
-            if current in visited: continue
-            visited.add(current)
-            r,c=current
-            self.animate_node(r,c,number=node_number,explored=True)
-            node_number+=1
-            if current==target: self.reconstruct_path(came_from,target);return
-            for nr,nc in reversed(self.neighbors(r,c)):
-                if (nr,nc) not in visited: stack.append((nr,nc));came_from.setdefault((nr,nc),current)
+            curr = stack.pop()
+            if (curr.r, curr.c) == self.target_pos:
+                self.reconstruct_path(curr.parent)
+                return
+            
+            if (curr.r, curr.c) not in visited:
+                visited.add((curr.r, curr.c))
+                self.animate_node(curr.r, curr.c)
+                for nr, nc in reversed(self.get_neighbors(curr.r, curr.c)):
+                    if (nr, nc) not in visited:
+                        stack.append(Node(nr, nc, curr))
 
-    # --- UCS ---
     def run_ucs(self):
-        start,target=self.start,self.target
-        pq=PriorityQueue();pq.put((0,start));came_from={};cost_so_far={start:0};node_number=1
-        while not pq.empty():
-            current_cost,current=pq.get()
-            r,c=current
-            self.animate_node(r,c,number=node_number,explored=True)
-            node_number+=1
-            if current==target: self.reconstruct_path(came_from,target);return
-            for nr,nc in self.neighbors(r,c):
-                new_cost=cost_so_far[current]+1
-                if (nr,nc) not in cost_so_far or new_cost<cost_so_far[(nr,nc)]:
-                    cost_so_far[(nr,nc)]=new_cost
-                    pq.put((new_cost,(nr,nc)))
-                    came_from[(nr,nc)]=current
+        pq = []
+        start_node = Node(*self.start_pos, cost=0)
+        heapq.heappush(pq, (0, id(start_node), start_node))
+        visited = {}
 
-    # --- DLS ---
-    def run_dls(self,limit):
-        start,target=self.start,self.target
-        came_from={};visited=set();node_number_ref=[1]
-        def dfs(node,depth):
-            if self.stop_flag: raise StopIteration
-            if depth<0: return False
-            r,c=node
-            if node not in visited:
-                visited.add(node)
-                self.animate_node(r,c,number=node_number_ref[0],explored=True)
-                node_number_ref[0]+=1
-            if node==target: return True
-            for nr,nc in self.neighbors(r,c):
-                if (nr,nc) not in visited:
-                    came_from[(nr,nc)]=node
-                    if dfs((nr,nc),depth-1): return True
-            return False
-        if dfs(start,limit): self.reconstruct_path(came_from,target)
+        while pq:
+            cost, _, curr = heapq.heappop(pq)
+            if (curr.r, curr.c) == self.target_pos:
+                self.reconstruct_path(curr.parent)
+                return
 
-    # --- IDDFS ---
-    def run_iddfs(self,max_depth):
-        start,target=self.start,self.target
-        for depth in range(max_depth):
-            self.clear_explored_path()
-            came_from={};visited=set();node_number_ref=[1]
-            def dfs(node,depth_left):
-                if self.stop_flag: raise StopIteration
-                if depth_left<0: return False
-                r,c=node
-                if node not in visited:
-                    visited.add(node)
-                    self.animate_node(r,c,number=node_number_ref[0],explored=True)
-                    node_number_ref[0]+=1
-                if node==target: return True
-                for nr,nc in self.neighbors(r,c):
-                    if (nr,nc) not in visited:
-                        came_from[(nr,nc)]=node
-                        if dfs((nr,nc),depth_left-1): return True
-                return False
-            if dfs(start,depth):
-                self.reconstruct_path(came_from,target)
-                break
+            if (curr.r, curr.c) in visited and visited[(curr.r, curr.c)] <= cost:
+                continue
+            visited[(curr.r, curr.c)] = cost
 
-    # --- Bidirectional ---
+            self.animate_node(curr.r, curr.c)
+            for nr, nc in self.get_neighbors(curr.r, curr.c):
+                new_cost = cost + 1
+                neighbor = Node(nr, nc, curr, new_cost)
+                heapq.heappush(pq, (new_cost, id(neighbor), neighbor))
+
+    def run_dls(self, limit):
+        def dls_rec(curr, l, visited):
+            if (curr.r, curr.c) == self.target_pos: return curr
+            if l <= 0: return None
+            
+            visited.add((curr.r, curr.c))
+            self.animate_node(curr.r, curr.c)
+            
+            for nr, nc in self.get_neighbors(curr.r, curr.c):
+                if (nr, nc) not in visited:
+                    res = dls_rec(Node(nr, nc, curr), l-1, visited)
+                    if res: return res
+            return None
+
+        result = dls_rec(Node(*self.start_pos), limit, set())
+        if result: self.reconstruct_path(result.parent)
+
+    def run_iddfs(self):
+        for depth in range(IDDFS_MAX_DEPTH):
+            self.clear_path_only()
+            res = self.run_dls(depth)
+            if res or self.stop_flag: break
+
     def run_bidirectional(self):
-        start,target=self.start,self.target
-        frontier_start=Queue();frontier_target=Queue()
-        frontier_start.put(start);frontier_target.put(target)
-        came_from_start={start:None};came_from_target={target:None}
-        visited_start=set([start]);visited_target=set([target])
-        node_number=1;meeting_node=None
-        while not frontier_start.empty() and not frontier_target.empty():
-            # Start side
-            current_start=frontier_start.get()
-            r,c=current_start
-            self.animate_node(r,c,number=node_number,explored=True)
-            node_number+=1
-            for nr,nc in self.neighbors(r,c):
-                if (nr,nc) not in visited_start:
-                    visited_start.add((nr,nc));frontier_start.put((nr,nc))
-                    came_from_start[(nr,nc)]=current_start
-                    if (nr,nc) in visited_target: meeting_node=(nr,nc);break
-            if meeting_node: break
-            # Target side
-            current_target=frontier_target.get()
-            r,c=current_target
-            self.animate_node(r,c,number=node_number,explored=True)
-            node_number+=1
-            for nr,nc in self.neighbors(r,c):
-                if (nr,nc) not in visited_target:
-                    visited_target.add((nr,nc));frontier_target.put((nr,nc))
-                    came_from_target[(nr,nc)]=current_target
-                    if (nr,nc) in visited_start: meeting_node=(nr,nc);break
-            if meeting_node: break
-        if meeting_node:
-            path_start=[];current=meeting_node
-            while current: path_start.append(current);current=came_from_start[current]
-            path_start.reverse()
-            path_target=[];current=came_from_target[meeting_node]
-            while current: path_target.append(current);current=came_from_target[current]
-            full_path=path_start+path_target
-            for r,c in full_path:
-                if self.grid[r][c].type not in ("start","target"):
-                    self.grid[r][c].type="path"
-                    self.update_cell_color(r,c)
-                    self.root.update()
-                    time.sleep(DELAY)
-        else: messagebox.showinfo("Result","No path found!")
+        v1 = {self.start_pos: Node(*self.start_pos)}
+        v2 = {self.target_pos: Node(*self.target_pos)}
+        q1, q2 = [v1[self.start_pos]], [v2[self.target_pos]]
 
-# --- Main ---
-if __name__=="__main__":
-    root=tk.Tk()
-    app=GridApp(root)
+        while q1 and q2:
+            # Forward
+            curr_f = q1.pop(0)
+            self.animate_node(curr_f.r, curr_f.c)
+            if (curr_f.r, curr_f.c) in v2:
+                self.merge_bidir(curr_f, v2[(curr_f.r, curr_f.c)])
+                return
+
+            for n in self.get_neighbors(curr_f.r, curr_f.c):
+                if n not in v1:
+                    v1[n] = Node(*n, curr_f)
+                    q1.append(v1[n])
+
+            # Backward
+            curr_b = q2.pop(0)
+            self.animate_node(curr_b.r, curr_b.c)
+            if (curr_b.r, curr_b.c) in v1:
+                self.merge_bidir(v1[(curr_b.r, curr_b.c)], curr_b)
+                return
+
+            for n in self.get_neighbors(curr_b.r, curr_b.c):
+                if n not in v2:
+                    v2[n] = Node(*n, curr_b)
+                    q2.append(v2[n])
+
+    def merge_bidir(self, node_f, node_b):
+        self.reconstruct_path(node_f)
+        self.reconstruct_path(node_b)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = GridApp(root)
     root.mainloop()
